@@ -16,12 +16,21 @@ interface DictionaryResult {
   meanings: { partOfSpeech: string; definitions: { definition: string }[] }[];
 }
 
+interface WikiResult {
+  title: string;
+  extract: string;
+}
+
+type LookupResult =
+  | { type: "dictionary"; data: DictionaryResult }
+  | { type: "wiki"; data: WikiResult };
+
 interface Popover {
   x: number;
   y: number;
   text: string;
   state: "loading" | "result" | "error";
-  data?: DictionaryResult;
+  result?: LookupResult;
   errorMsg?: string;
 }
 
@@ -32,6 +41,35 @@ async function fetchDefinition(word: string): Promise<DictionaryResult> {
   if (!res.ok) throw new Error("not found");
   const json = await res.json();
   return json[0] as DictionaryResult;
+}
+
+async function fetchWikiSummary(phrase: string): Promise<WikiResult> {
+  // Strip parentheticals and punctuation, normalize whitespace
+  const cleaned = phrase
+    .replace(/\(.*?\)/g, "")
+    .replace(/[^a-zA-Z0-9\s'-]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const res = await fetch(
+    `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(cleaned)}`,
+    { headers: { Accept: "application/json" } }
+  );
+  if (!res.ok) throw new Error("not found");
+  const json = await res.json();
+  if (json.type === "disambiguation" || !json.extract) throw new Error("ambiguous");
+  return { title: json.title, extract: json.extract };
+}
+
+async function lookup(text: string): Promise<LookupResult> {
+  const words = text.trim().split(/\s+/);
+  if (words.length === 1) {
+    const word = words[0].replace(/[^a-zA-Z'-]/g, "");
+    const data = await fetchDefinition(word);
+    return { type: "dictionary", data };
+  }
+  // Multi-word: try Wikipedia
+  const data = await fetchWikiSummary(text);
+  return { type: "wiki", data };
 }
 
 export default function Home() {
@@ -51,18 +89,14 @@ export default function Home() {
     const x = rect.left + rect.width / 2 - containerRect.left;
     const y = rect.top - containerRect.top - 8;
 
-    // Only lookup single words
-    const firstWord = text.split(/\s+/)[0].replace(/[^a-zA-Z]/g, "");
-    if (!firstWord) return;
-
     setPopover({ x, y, text, state: "loading" });
 
     try {
-      const data = await fetchDefinition(firstWord);
-      setPopover((p) => p && { ...p, state: "result", data });
+      const result = await lookup(text);
+      setPopover((p) => p && { ...p, state: "result", result });
     } catch {
       setPopover((p) =>
-        p && { ...p, state: "error", errorMsg: `No definition found for "${firstWord}"` }
+        p && { ...p, state: "error", errorMsg: `No definition found for "${text}"` }
       );
     }
   }, []);
@@ -147,28 +181,45 @@ export default function Home() {
                   <div className="text-gray-500 text-xs">{popover.errorMsg}</div>
                 )}
 
-                {popover.state === "result" && popover.data && (
+                {popover.state === "result" && popover.result && (
                   <>
-                    <div className="flex items-baseline gap-2 mb-3">
-                      <span className="font-semibold text-gray-900 text-base">
-                        {popover.data.word}
-                      </span>
-                      {popover.data.phonetic && (
-                        <span className="text-xs text-gray-400">{popover.data.phonetic}</span>
-                      )}
-                    </div>
-                    <div className="space-y-3 max-h-52 overflow-y-auto">
-                      {popover.data.meanings.slice(0, 2).map((m, i) => (
-                        <div key={i}>
-                          <span className="inline-block text-[10px] font-medium uppercase tracking-wide text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded mb-1">
-                            {m.partOfSpeech}
+                    {popover.result.type === "dictionary" && (
+                      <>
+                        <div className="flex items-baseline gap-2 mb-3">
+                          <span className="font-semibold text-gray-900 text-base">
+                            {popover.result.data.word}
                           </span>
-                          <p className="text-gray-700 text-xs leading-5">
-                            {m.definitions[0].definition}
-                          </p>
+                          {popover.result.data.phonetic && (
+                            <span className="text-xs text-gray-400">{popover.result.data.phonetic}</span>
+                          )}
                         </div>
-                      ))}
-                    </div>
+                        <div className="space-y-3 max-h-52 overflow-y-auto">
+                          {popover.result.data.meanings.slice(0, 2).map((m, i) => (
+                            <div key={i}>
+                              <span className="inline-block text-[10px] font-medium uppercase tracking-wide text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded mb-1">
+                                {m.partOfSpeech}
+                              </span>
+                              <p className="text-gray-700 text-xs leading-5">
+                                {m.definitions[0].definition}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    {popover.result.type === "wiki" && (
+                      <>
+                        <div className="flex items-baseline gap-2 mb-3">
+                          <span className="font-semibold text-gray-900 text-base">
+                            {popover.result.data.title}
+                          </span>
+                          <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">Wikipedia</span>
+                        </div>
+                        <p className="text-gray-700 text-xs leading-5 max-h-52 overflow-y-auto">
+                          {popover.result.data.extract}
+                        </p>
+                      </>
+                    )}
                   </>
                 )}
               </div>
